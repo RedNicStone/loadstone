@@ -136,11 +136,25 @@ static void lsSystemFreeI(void* pUserData, void* ptr) {
     free(ptr);
 }
 
+static void* lsSystemAlignedAllocateI(void* userData, size_t size, size_t alignment) {
+    unused(userData);
+    void* ptr = NULL;
+    const int result = posix_memalign(ptr, alignment, size);
+    return result < 0 ? NULL : ptr;
+}
+
+static void lsSystemAlignedFreeI(void* userData, void* ptr) {
+    unused(userData);
+    free(ptr);
+}
+
 static LsAllocationCallbacks gDefaultAllocationCallbacks = {
     .pUserData = NULL,
     .pfnAllocation = lsSystemAllocateI,
     .pfnReallocation = lsSystemReallocateI,
     .pfnFree = lsSystemFreeI,
+    .pfnAlignedAllocation = lsSystemAlignedAllocateI,
+    .pfnAlignedFree = lsSystemAlignedFreeI,
 };
 
 static void* lsAllocateI(size_t size, const LsAllocationCallbacks* pAllocationCallbacks) {
@@ -172,6 +186,20 @@ static void lsFreeI(void* ptr, const LsAllocationCallbacks* pAllocationCallbacks
     pAllocationCallbacks->pfnFree(pAllocationCallbacks->pUserData, ptr);
 }
 
+static void* lsAlignedAllocateI(size_t size, size_t alignment, const LsAllocationCallbacks* pAllocationCallbacks) {
+    void* ptr = pAllocationCallbacks->pfnAlignedAllocation(pAllocationCallbacks->pUserData, size, alignment);
+
+    if (ptr == NULL) {
+        LS_LOG_ERROR("Failed to allocate aligned memory");
+        return NULL;
+    }
+
+    return ptr;
+}
+
+static void lsAlignedFreeI(void* pPtr, const LsAllocationCallbacks* pAllocationCallbacks) {
+    pAllocationCallbacks->pfnAlignedFree(pAllocationCallbacks->pUserData, pPtr);
+}
 
 LsMessageCallbacks gMessageCallback = { NULL, NULL };
 
@@ -381,30 +409,33 @@ typedef struct LsObject_T {
     ElfW(Nhdr)* note_segment_end;
 
     DtRel* dt_rel;
-    uint64_t dt_rel_count;
+    size_t dt_rel_count;
 
     DtRela* dt_rela;
-    uint64_t dt_rela_count;
+    size_t dt_rela_count;
 
     DtRelr* dt_relr;
-    uint64_t dt_relr_count;
+    size_t dt_relr_count;
 
     DtJmprel* dt_jmprel_ptr;
-    uint64_t dt_jmprel_count;
+    size_t dt_jmprel_count;
 
     dt_preinit_array* dt_preinit_array_ptr;
-    uint64_t dt_preinit_array_count;
+    size_t dt_preinit_array_count;
     ElfW(Addr) dt_preinit;
 
     dt_init_array* dt_init_array_ptr;
-    uint64_t dt_init_array_count;
+    size_t dt_init_array_count;
     ElfW(Addr) dt_init;
 
     dt_fini_array* dt_fini_array_ptr;
-    uint64_t dt_fini_array_count;
+    size_t dt_fini_array_count;
     ElfW(Addr) dt_fini;
 
     ElfW(Addr)* dt_pltgot;
+
+    size_t commonSymbolCount;
+    void** commonSymbolAddresses;
 
     int dt_textrel;
     int dt_flags;
@@ -467,6 +498,9 @@ static void lsInitializeObjectI(LsObject object) {
     object->dt_preinit_array_ptr    = NULL;
     object->dt_init_array_ptr       = NULL;
     object->dt_fini_array_ptr       = NULL;
+
+    object->commonSymbolCount       = 0;
+    object->commonSymbolAddresses   = NULL;
 }
 
 LsStatus lsOpenObjectFromMemory(
@@ -574,6 +608,11 @@ void lsCloseObject(LsObject object) {
 
     if (pObject->objectInfo.pPath != NULL)
         lsFreeI((void*)(uintptr_t) pObject->objectInfo.pPath, &pObject->allocationCallbacks);
+
+    if (pObject->commonSymbolAddresses != NULL) {
+        for (size_t i = 0; i < pObject->commonSymbolCount; i++)
+            lsAlignedFreeI(pObject->commonSymbolAddresses[i], &pObject->allocationCallbacks);
+    }
 
     lsFreeI(pObject, &pObject->allocationCallbacks);
     lsDeinitializeI();
@@ -1518,6 +1557,14 @@ const LsObjectInfo* lsGetObjectInfo(LsObject object) {
     return &object->objectInfo;
 }
 
+static size_t lsGetCommonSymbolCountI(LsObject object) {
+    size_t count = 0;
+    for (ElfW(Sym)* symbol = object->dtSymTabBegin; symbol < object->dtSymTabEnd; ++symbol) {
+        if (symbol->st_shndx == SHN_COMMON)
+            ++count;
+    }
+    return count;
+}
 
 /// Implements the PJW hash algorithm by Peter J. Weinberger
 /// \param name String to hash
@@ -1649,7 +1696,7 @@ void* lsGetSymbolAddress(LsObject object, const char* pSymbolName) {
     return (void*)(object->pLoadAddress + symbol->st_value);
 }
 
-static LsStatus lsResolveSymbol(LsObject object, const LsObjectResolveCallbacks* pCallbacks, const ElfW(Sym)* symbol, void** pSymbolAddress) {
+static LsStatus lsResolveSymbolI(LsObject object, const LsObjectResolveCallbacks* pCallbacks, const ElfW(Sym)* symbol, void** pSymbolAddress) {
     switch (symbol->st_shndx) {
         case SHN_UNDEF: {
             const char* pSymbolName = &object->dtStrTab[symbol->st_name];
@@ -1665,11 +1712,12 @@ static LsStatus lsResolveSymbol(LsObject object, const LsObjectResolveCallbacks*
             // symbol->st_value;     Alignment requirement
             // symbol->st_size;      Size of the symbol
 
-            const int result = posix_memalign(pSymbolAddress, symbol->st_value, symbol->st_size);
+            *pSymbolAddress = lsAlignedAllocateI(symbol->st_size, symbol->st_value, &object->allocationCallbacks);
 
-            // todo: use user callback, free memory
-            if (unlikely(result != 0))
-                return LS_ERROR_INTERNAL;
+            if (unlikely(!*pSymbolAddress))
+                return LS_ERROR_MEMORY_ALLOCATION_FAILED;
+
+            object->commonSymbolAddresses[object->commonSymbolCount++] = *pSymbolAddress;
 
             return LS_OK;
         }
@@ -1704,7 +1752,7 @@ static LsStatus lsResolveRelocationTypeI(LsObject object, const LsObjectResolveC
         case R_X86_64_32S:  // word32 (signed)
         case R_X86_64_16:   // word16
         case R_X86_64_8:    // word8
-            status = lsResolveSymbol(object, pCallbacks, symbol, (void**) &resolved_address);
+            status = lsResolveSymbolI(object, pCallbacks, symbol, (void**) &resolved_address);
             resolved_address = (ElfW(Addr)) ((ElfW(Sxword)) resolved_address + addend);
             break;
 
@@ -1716,7 +1764,7 @@ static LsStatus lsResolveRelocationTypeI(LsObject object, const LsObjectResolveC
         case R_X86_64_PC32:  // word32
         case R_X86_64_PC16:  // word16
         case R_X86_64_PC8:   // word8
-            status = lsResolveSymbol(object, pCallbacks, symbol, (void**) &resolved_address);
+            status = lsResolveSymbolI(object, pCallbacks, symbol, (void**) &resolved_address);
             resolved_address = (ElfW(Addr)) ((ElfW(Sxword)) resolved_address + addend);
             resolved_address -= offset;
             break;
@@ -1769,7 +1817,7 @@ static LsStatus lsResolveRelocationTypeI(LsObject object, const LsObjectResolveC
 
             // todo: symbol should be of type R_X86_64_GLOB_DAT
             uint64_t symbol_address;
-            status = lsResolveSymbol(object, pCallbacks, symbol, (void**) &symbol_address);
+            status = lsResolveSymbolI(object, pCallbacks, symbol, (void**) &symbol_address);
             resolved_address  = symbol_address;
             resolved_address += (ElfW(Addr)) object->dt_pltgot;
             resolved_address = (ElfW(Addr)) ((ElfW(Sxword)) resolved_address + addend);
@@ -1784,7 +1832,7 @@ static LsStatus lsResolveRelocationTypeI(LsObject object, const LsObjectResolveC
             if (unlikely(object->dt_pltgot == NULL))
                 return LS_ERROR_OBJECT_INVALID;
 
-            status = lsResolveSymbol(object, pCallbacks, symbol, (void**) &resolved_address);
+            status = lsResolveSymbolI(object, pCallbacks, symbol, (void**) &resolved_address);
             resolved_address = (ElfW(Addr)) ((ElfW(Sxword)) resolved_address + addend);
             resolved_address -= (ElfW(Addr)) object->dt_pltgot;
             break;
@@ -1804,7 +1852,7 @@ static LsStatus lsResolveRelocationTypeI(LsObject object, const LsObjectResolveC
         // ------------------------------------------------------------------------
         case R_X86_64_GLOB_DAT:
         case R_X86_64_JUMP_SLOT:
-            status = lsResolveSymbol(object, pCallbacks, symbol, (void**) &resolved_address);
+            status = lsResolveSymbolI(object, pCallbacks, symbol, (void**) &resolved_address);
             break;
 
         // ------------------------------------------------------------------------
@@ -1842,7 +1890,7 @@ static LsStatus lsResolveRelocationTypeI(LsObject object, const LsObjectResolveC
         //   S = symbol to copy value from
         // ------------------------------------------------------------------------
         case R_X86_64_COPY: {
-            status = lsResolveSymbol(object, pCallbacks, symbol, (void**) &resolved_address);
+            status = lsResolveSymbolI(object, pCallbacks, symbol, (void**) &resolved_address);
             if (unlikely(status != LS_OK))
                 return status;
 
@@ -2219,6 +2267,13 @@ LsStatus lsResolveObject(LsObject object, const LsObjectResolveCallbacks* pResol
     } else
         resolveCallbacks = gDefaultResolveCallbacks;
 
+    const size_t symbol_count = lsGetCommonSymbolCountI(object);
+    if (symbol_count > 0) {
+        object->commonSymbolAddresses = lsAllocateI(sizeof(void*) * symbol_count, &object->allocationCallbacks);
+        if (unlikely(object->commonSymbolAddresses == NULL))
+            return LS_ERROR_MEMORY_ALLOCATION_FAILED;
+    }
+
     const LsStatus status = lsProcessRelocationsI(object, &resolveCallbacks);
     return status;
 }
@@ -2312,7 +2367,6 @@ static LsObjectFinalizeCallbacks gDefaultFinalizeCallback = {
 };
 
 LsStatus lsInitializeObject(LsObject object, const LsObjectInitializeCallbacks* pInitializeCallbacks) {
-
     // We won't announce the load any earlier since the user can drag apart loading and initialization
     // If objects are loaded out of order or dlopen() is called this would confuse the debugger
     if (object->debugSupport == LS_DEBUG_SUPPORT_ENABLE_GNU)

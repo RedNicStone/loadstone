@@ -86,6 +86,19 @@ typedef void * (*LsReallocationFunction)(void *pUserData, void *ptr, size_t size
 /// @param ptr              [in] Pointer to the memory to free.
 typedef void (*LsFreeFunction)(void *pUserData, void *ptr);
 
+/// @brief Callback for aligned memory allocation.
+/// @param pUserData        [in] User data passed in LsAllocationCallbacks.
+/// @param size             [in] Size of the memory to allocate.
+/// @param alignment        [in] Alignment of the memory to allocate.
+/// @return     Pointer to the allocated memory, aligned to the specified alignment.
+///             Returning NULL indicates that the allocation failed.
+typedef void * (*LsAlignedAllocationFunction)(void *pUserData, size_t size, size_t alignment);
+
+/// @brief Callback for freeing aligned memory.
+/// @param pUserData        [in] User data passed in LsFreeCallbacks.
+/// @param ptr              [in] Pointer to the aligned memory to free.
+typedef void (*LsAlignedFreeFunction)(void *pUserData, void *ptr);
+
 /// @brief Callback for loading needed shared objects.
 /// @param pUserData        [in] User data passed in LsObjectLoadCallbacks.
 /// @param object           [in] Object handle.
@@ -125,10 +138,12 @@ typedef struct LsMessageCallbacks {
 
 /// @brief Memory allocation callback information.
 typedef struct LsAllocationCallbacks {
-    void *pUserData;                        ///< User data passed to the allocation callbacks.
-    LsAllocationFunction pfnAllocation;     ///< Allocation callback.
-    LsReallocationFunction pfnReallocation; ///< Reallocation callback.
-    LsFreeFunction pfnFree;                 ///< Free callback.
+    void *pUserData;                                      ///< User data passed to the allocation callbacks.
+    LsAllocationFunction pfnAllocation;                   ///< Allocation callback.
+    LsReallocationFunction pfnReallocation;               ///< Reallocation callback.
+    LsFreeFunction pfnFree;                               ///< Free callback.
+    LsAlignedAllocationFunction pfnAlignedAllocation;     ///< Aligned allocation callback.
+    LsAlignedFreeFunction pfnAlignedFree;                 ///< Aligned free callback.
 } LsAllocationCallbacks;
 
 /// @brief Callback for loading needed libraries.
