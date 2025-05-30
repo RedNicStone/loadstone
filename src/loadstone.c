@@ -1,15 +1,10 @@
 
 #include "loadstone.h"
 
-#include <stdlib.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#include <fcntl.h>
 #include <elf.h>
-#include <link.h>
-#include <string.h>
+
 #include <limits.h>
+#include <string.h>
 #include <stdbool.h>
 
 #define ENABLE_LOGGING_ALL
@@ -27,12 +22,11 @@
 #ifdef ENABLE_LOGGING
 #include <stdarg.h>
 #include <stdio.h>
-#include <errno.h>
 #endif
 
-#if defined(__LP64__) || defined(_LP64)
+#if defined(__LP64__) || defined(_LP64) || defined(_WIN64)
 # define ELFCLASS_BITS 64
-#elif
+#else
 # define ELFCLASS_BITS 32
 #endif
 
@@ -70,6 +64,14 @@
 
 #define unused(x)       do { (void)(x); } while (0)
 
+#if defined(_WIN32)
+#include "windows.h"
+#else
+#include <link.h>
+#include "unix.h"
+#endif
+
+#include "common.h"
 
 static ElfW(Addr) align_down(ElfW(Addr) value, ElfW(Addr) alignment) {
     return value & ~(alignment - 1);
@@ -79,18 +81,16 @@ static ElfW(Addr) align_up(ElfW(Addr) value, ElfW(Addr) alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
 }
 
-
-static long lsGetPageSizeI(void) {
-    return sysconf(_SC_PAGE_SIZE);
-}
 static unsigned long gPageSize;
 static uint32_t gOpenHandles = 0;
 
+#if !defined(_WIN32)
 #define GNU_R_DEBUG_NAME     "_r_debug"
 #define GNU_DEBUG_STATE_NAME "_dl_debug_state"
 
 static struct r_debug* gGnuRDebug;
 static void (*gGnuDebugState)(void);
+#endif
 
 #if defined(ENABLE_LOGGING)
 static void lsLogMessageI(LsSeverity severity, const char* pMessage);
@@ -120,33 +120,6 @@ static void lsLogMessageFormattedI(const LsAllocationCallbacks* pAllocationCallb
 #define LS_LOG_ERROR(message)
 #define LS_LOG_ERROR_F(callbacks, message, ...)
 #endif
-
-static void* lsSystemAllocateI(void* pUserData, size_t size) {
-    unused(pUserData);
-    return malloc(size);
-}
-
-static void* lsSystemReallocateI(void* pUserData, void* ptr, size_t size) {
-    unused(pUserData);
-    return realloc(ptr, size);
-}
-
-static void lsSystemFreeI(void* pUserData, void* ptr) {
-    unused(pUserData);
-    free(ptr);
-}
-
-static void* lsSystemAlignedAllocateI(void* userData, size_t size, size_t alignment) {
-    unused(userData);
-    void* ptr = NULL;
-    const int result = posix_memalign(ptr, alignment, size);
-    return result < 0 ? NULL : ptr;
-}
-
-static void lsSystemAlignedFreeI(void* userData, void* ptr) {
-    unused(userData);
-    free(ptr);
-}
 
 static LsAllocationCallbacks gDefaultAllocationCallbacks = {
     .pUserData = NULL,
@@ -270,60 +243,23 @@ static LsStatus lsInitializeI(LsDebugSupport debugSupport) {
     if (gState == INITIALIZED)
         return LS_OK;
 
+    const LsStatus status = lsInitializeDebugSupportI(debugSupport);
+    if (status != LS_OK)
+        return status;
+
     gState = INITIALIZED;
-    long page_size = lsGetPageSizeI();
-    if (page_size < 0)
-        return LS_ERROR_INTERNAL;  // Do we need error handling here? I mean, if we fail here the user probably has bigger problems :D.
+    const size_t page_size = lsGetPageSizeI();
 
     gPageSize = (unsigned long) page_size;
 
-    if (debugSupport == LS_DEBUG_SUPPORT_ENABLE_GNU) {
-
-        if (gGnuRDebug == NULL) {
-            gGnuRDebug = dlsym(RTLD_DEFAULT, GNU_R_DEBUG_NAME);
-            if (!gGnuRDebug) {
-                LS_LOG_ERROR("Failed to load symbol '" GNU_R_DEBUG_NAME "' from GNU debug support library");
-                return LS_ERROR_INTERNAL;
-            }
-
-            if (gGnuRDebug->r_brk == 0) {
-                LS_LOG_ERROR("GNU debug support library has not yet been initialized."
-                                                 "Please load any dynamic library, either trough the interpreter or dlopen(), before opening an object");
-                return LS_ERROR_INTERNAL;
-            }
-
-            if (gGnuRDebug->r_version == 0) {
-                LS_LOG_ERROR("GNU debug support library uses unrecognized protocol version");
-                return LS_ERROR_INTERNAL;
-            }
-        }
-
-        if (gGnuDebugState == NULL) {
-            union {
-                void* obj;
-                void (*func)(void);
-            } u;
-
-            u.obj = dlsym(RTLD_DEFAULT, GNU_DEBUG_STATE_NAME);
-            if (!u.obj)
-                u.obj = (void*) gGnuRDebug->r_brk;
-
-            gGnuDebugState = u.func;
-
-            if (!gGnuDebugState) {
-                LS_LOG_ERROR("Failed to load symbol '" GNU_DEBUG_STATE_NAME "' from GNU debug support library");
-                return LS_ERROR_INTERNAL;
-            }
-        }
-    }
     return LS_OK;
 }
 
 static void lsDeinitializeI(void) {
     --gOpenHandles;
 
-    if (gOpenHandles == 0 && gState == INITIALIZED)
-        gState = UNINITIALIZED;
+    //if (gOpenHandles == 0 && gState == INITIALIZED)
+    //    gState = UNINITIALIZED;
 }
 
 typedef ElfW(Xword) RelType;
@@ -381,7 +317,7 @@ enum {
 typedef struct LsObject_T {
     ElfW(Addr) pFileData;
     size_t fileSize;
-    int fileDescriptor;
+    LsMappedFileI file;
     LsDebugSupport debugSupport;
 
     LsObjectInfo objectInfo;
@@ -446,7 +382,6 @@ typedef struct LsObject_T {
 static void lsInitializeObjectI(LsObject object) {
     object->pFileData               = 0;
     object->fileSize                = 0;
-    object->fileDescriptor          = -1;
 
     object->objectInfo.pLoadAddress = NULL;
     object->objectInfo.pPath        = NULL;
@@ -525,7 +460,6 @@ LsStatus lsOpenObjectFromMemory(
 
     object->pFileData = (ElfW(Addr)) pElf;
     object->fileSize = elfSize;
-    object->fileDescriptor = -1;
 
     object->allocationCallbacks.pUserData       = pAllocationCallbacks->pUserData;
     object->allocationCallbacks.pfnAllocation   = pAllocationCallbacks->pfnAllocation;
@@ -541,7 +475,7 @@ LsStatus lsOpenObjectFromFile(
     LsDebugSupport debugSupport,
     LsObject* pObject,
     const LsAllocationCallbacks* pAllocationCallbacks) {
-    const LsStatus status = lsInitializeI(debugSupport);
+    LsStatus status = lsInitializeI(debugSupport);
     if (status != LS_OK)
         return status;
 
@@ -550,43 +484,43 @@ LsStatus lsOpenObjectFromFile(
 
     char* pFileName = lsAllocateI(strlen(pPath) + 1, pAllocationCallbacks);
     if (unlikely(pFileName == NULL)) {
-        LS_LOG_ERROR("lsOpenObjectFromFile: Failed to allocate memory for file name");
+        LS_LOG_ERROR("Failed to allocate memory for file name");
         return LS_ERROR_MEMORY_ALLOCATION_FAILED;
     }
     strcpy(pFileName, pPath);
 
     LsObject_T* object = lsAllocateI(sizeof(struct LsObject_T), pAllocationCallbacks);
     if (unlikely(object == NULL)) {
-        LS_LOG_ERROR_F(&object->allocationCallbacks, "lsOpenObjectFromFile: Failed to allocate memory: %s", strerror(errno));
+        LS_LOG_ERROR("Failed to allocate memory");
         lsFreeI(pFileName, pAllocationCallbacks);
         return LS_ERROR_MEMORY_ALLOCATION_FAILED;
     }
     lsInitializeObjectI(object);
     object->objectInfo.pPath = pFileName;
 
-    object->fileDescriptor = open(pPath, O_RDONLY);
-    if (unlikely(object->fileDescriptor < 0)) {
-        LS_LOG_ERROR_F(&object->allocationCallbacks, "lsOpenObjectFromFile: Failed to open file: %s", strerror(errno));
+    status = lsOpenFileI(&object->file, pFileName, pAllocationCallbacks);
+    if (status != LS_OK) {
+        lsFreeI(pFileName, pAllocationCallbacks);
         lsFreeI(object, pAllocationCallbacks);
-        return LS_ERROR_FILE_ACTION_FAILED;
+        return status;
     }
 
-    struct stat elf_stat;
-    if (unlikely(fstat(object->fileDescriptor, &elf_stat) < 0) || elf_stat.st_size < 0) {
-        LS_LOG_ERROR_F(&object->allocationCallbacks, "lsOpenObjectFromFile: Failed to stat file: %s", strerror(errno));
+    status = lsGetFileSizeI(&object->fileSize, &object->file);
+    if (status != LS_OK) {
+        lsFreeI(pFileName, pAllocationCallbacks);
         lsFreeI(object, pAllocationCallbacks);
-        return LS_ERROR_FILE_ACTION_FAILED;
+        lsCloseFileI(&object->file);
+        return status;
     }
 
-    void* pFileData = mmap(NULL, (size_t) elf_stat.st_size, PROT_READ, MAP_PRIVATE, object->fileDescriptor, 0);
-    if (unlikely(pFileData == MAP_FAILED)) {
-        LS_LOG_ERROR_F(&object->allocationCallbacks, "lsOpenObjectFromFile: Failed to map file: %s", strerror(errno));
+    status = lsMapFileI((void**) &object->pFileData, &object->file, LS_ACCESS_READ, 0, object->fileSize, NULL);
+    if (status != LS_OK) {
+        lsFreeI(pFileName, pAllocationCallbacks);
         lsFreeI(object, pAllocationCallbacks);
-        return LS_ERROR_MEMORY_MAP_FAILED;
+        lsCloseFileI(&object->file);
+        return status;
     }
 
-    object->pFileData = (ElfW(Addr)) pFileData;
-    object->fileSize = (size_t) elf_stat.st_size;
     object->debugSupport = debugSupport;
 
     object->allocationCallbacks.pUserData       = pAllocationCallbacks->pUserData;
@@ -601,13 +535,19 @@ LsStatus lsOpenObjectFromFile(
 void lsCloseObject(LsObject object) {
     LsObject_T* pObject = object;
 
-    if (pObject->fileDescriptor >= 0) {
-        munmap((void*) pObject->pFileData, pObject->fileSize);
-        close(pObject->fileDescriptor);
-    }
+#if defined(_WIN32)
+    const LsMappedFileI* file = NULL;
+#else
+    const LsMappedFileI* file = &pObject->file;
+#endif
+    unused(file);
+    lsUnmapFileI((void*) pObject->pLoadAddress, NULL, object->load_segment_end - object->load_segment_begin);
 
-    if (pObject->objectInfo.pPath != NULL)
+    if (pObject->objectInfo.pPath != NULL) {
+        lsUnmapFileI((void*) pObject->pFileData, &pObject->file, pObject->fileSize);
+        lsCloseFileI(&pObject->file);
         lsFreeI((void*)(uintptr_t) pObject->objectInfo.pPath, &pObject->allocationCallbacks);
+    }
 
     if (pObject->commonSymbolAddresses != NULL) {
         for (size_t i = 0; i < pObject->commonSymbolCount; i++)
@@ -825,31 +765,46 @@ static LsStatus lsParseSegmentsI(LsObject object) {
     return LS_OK;
 }
 
-static int lsConvertProtectionFlags(ElfW(Word) flags) {
-    int protection = 0;
+/*
+static LsAccessMode lsConvertProtectionFlagsI(ElfW(Word) flags) {
+    LsAccessMode protection = LS_ACCESS_NONE;
     if (flags & PF_R)
-        protection |= PROT_READ;
+        protection |= LS_ACCESS_READ;
     if (flags & PF_W)
-        protection |= PROT_WRITE;
+        protection |= LS_ACCESS_WRITE;
     if (flags & PF_X)
-        protection |= PROT_EXEC;
+        protection |= LS_ACCESS_EXECUTE;
 
-    if (protection & PROT_WRITE && protection & PROT_EXEC) {
+    if (protection & LS_ACCESS_WRITE && protection & LS_ACCESS_EXECUTE) {
         LS_LOG_WARNING("Segment is both writable and executable, marking it as non-executable and continuing");
-        protection &= ~PROT_EXEC;
+        protection &= ~(LsAccessMode) LS_ACCESS_EXECUTE;
     }
 
     return protection;
+}*/
+
+static LsAccessMode lsConvertProtectionFlagsToUnixFlagsI(LsAccessMode protection) {
+    int flags = 0;
+    if (protection & PF_R) flags |= LS_ACCESS_READ;
+    if (protection & PF_W) flags |= LS_ACCESS_WRITE;
+    if (protection & PF_X) flags |= LS_ACCESS_EXECUTE;
+
+    if (protection & PF_W && protection & PF_X) {
+        LS_LOG_WARNING("Segment is both writable and executable, marking it as non-executable and continuing");
+        protection &= ~((unsigned int) LS_ACCESS_EXECUTE);
+    }
+
+    return flags;
 }
 
+#if !defined(_WIN32)
 /// Loads ELF segments into memory.
 /// This function is heavily based on '_dl_map_segments' from the GNU C Library for compatibility reasons.
-static LsStatus lsLoadSegmentsI(LsObject object) {
-    const ElfW(Addr)  map_length    = object->load_segment_end - object->load_segment_begin;
-
+static LsStatus lsLoadSegmentsFromFileI(LsObject object) {
     LS_LOG_INFO_F(&object->allocationCallbacks, "Identified %llu loadable segments", object->load_segment_count);
     LS_LOG_INFO_F(&object->allocationCallbacks, "Loading ELF from 0x%llx to 0x%llx", object->load_segment_begin, object->load_segment_end);
 
+    const ElfW(Addr)  map_length    = object->load_segment_end - object->load_segment_begin;
     const ElfW(Ehdr)* elf_header    = (ElfW(Ehdr)*) object->pFileData;
     const ElfW(Phdr)* elf_segment   = (ElfW(Phdr)*)(object->pFileData + elf_header->e_phoff);
 
@@ -872,12 +827,11 @@ static LsStatus lsLoadSegmentsI(LsObject object) {
 
         LS_LOG_INFO_F(&object->allocationCallbacks, "Loading ELF segment %i from 0x%llx to 0x%llx", i, elf_segment->p_vaddr, elf_segment->p_vaddr + elf_segment->p_memsz);
 
-        const int protection_flags = lsConvertProtectionFlags(elf_segment->p_flags);
+        const LsAccessMode protection_flags = lsConvertProtectionFlagsToUnixFlagsI(elf_segment->p_flags);
 
         void* map_address;
         size_t segment_size;
-        int mmap_flags = MAP_PRIVATE | MAP_FILE;
-        const off_t offset = (off_t) align_down(elf_segment->p_offset, gPageSize);
+        const ElfW(Addr) offset = align_down(elf_segment->p_offset, gPageSize);
         if (unlikely(base_pointer == NULL)) {
             // For the initial segment, we will map enough memory for the entire object
             map_address  = NULL;
@@ -886,27 +840,21 @@ static LsStatus lsLoadSegmentsI(LsObject object) {
             // For later segments, we will override the initial segment mapping
             map_address  = (char*) base_pointer + data_page_begin;
             segment_size = data_page_end - data_page_begin;
-            mmap_flags |= MAP_FIXED;
         }
 
-        void* segment_pointer =
-            mmap(map_address,
-                 segment_size,
-                 protection_flags,
-                 mmap_flags,
-                 object->fileDescriptor,
-                  offset);
-
-        if (unlikely(segment_pointer == MAP_FAILED)) {
-            LS_LOG_ERROR_F(&object->allocationCallbacks, "Cannot memory map ELF segment %i, error: %s", i, strerror(errno));
-            return LS_ERROR_MEMORY_MAP_FAILED;
-        }
+        void* segment_pointer;
+        LsStatus status = lsMapFileI(&segment_pointer, &object->file, protection_flags, offset, segment_size, map_address);
 
         if (unlikely(base_pointer == NULL)) {
             // This is the first segment, write the base pointer
             base_pointer = segment_pointer;
             object->pLoadAddress = (ElfW(Addr)) base_pointer;
             object->objectInfo.pLoadAddress = base_pointer;
+        }
+
+        if (unlikely(status != LS_OK)) {
+            LS_LOG_ERROR_F(&object->allocationCallbacks, "Cannot memory map ELF segment %i", i);
+            return LS_ERROR_MEMORY_MAP_FAILED;
         }
 
         // End of zeroed data, relative to the load address
@@ -925,49 +873,94 @@ static LsStatus lsLoadSegmentsI(LsObject object) {
             if (zero_page_begin > zero_begin) {
                 void* zero_section_pointer = (char*) base_pointer + align_down(zero_begin, gPageSize);
                 // Check if the segment is writable
-                if ((protection_flags & PROT_WRITE) == 0)
+                if ((protection_flags & LS_ACCESS_WRITE) == 0) {
                     // Dang, nab it. We will have to mark it as writable briefly.
-                    if (unlikely(mprotect(zero_section_pointer,
-                                 gPageSize,
-                                 protection_flags | PROT_WRITE) == -1)){
-                        LS_LOG_ERROR_F(&object->allocationCallbacks, "Cannot memory protect ELF section for zeroing, error: %s", strerror(errno));
-                        return LS_ERROR_MEMORY_MAP_FAILED;
+                    status = lsProtectPageI(zero_section_pointer, gPageSize, protection_flags & LS_ACCESS_WRITE);
+
+                    if (status != LS_OK) {
+                        LS_LOG_ERROR("Cannot memory protect ELF section for zeroing");
+                        return status;
                     }
+                }
 
                 // Zero the section
                 memset((char*) base_pointer + zero_begin, '\0', zero_page_begin - zero_begin);
 
                 LS_LOG_INFO_F(&object->allocationCallbacks, "Zeroed out ELF segment %i from 0x%llx to 0x%llx", i, zero_begin, zero_page_begin);
 
-                if ((protection_flags & PROT_WRITE) == 0)
+                if ((protection_flags & LS_ACCESS_WRITE) == 0) {
                     // Revert to the original protection flags
                     // We will assume that this cannot fail, since we just changed the protection flags
-                    if (unlikely(mprotect(zero_section_pointer,
-                                 gPageSize,
-                                 protection_flags) == -1)) {
-                        LS_LOG_ERROR_F(&object->allocationCallbacks, "Cannot memory protect ELF section after zeroing, error: %s", strerror(errno));
-                        return LS_ERROR_MEMORY_MAP_FAILED;
+                    status = lsProtectPageI(zero_section_pointer, gPageSize, protection_flags);
+                    if (unlikely(status != LS_OK)) {
+                        LS_LOG_ERROR("Cannot memory protect ELF section after zeroing");
+                        return status;
                     }
+                }
             }
 
             // Fill the remaining space with zeroed pages
             if (zero_end > zero_page_begin) {
-                const void* zero_section_pointer =
-                    mmap((char*) base_pointer + zero_page_begin,
-                         zero_end - zero_page_begin,
-                         protection_flags,
-                         MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS,
-                         -1,
-                         0);
+                void* zero_section_pointer;
+                status = lsMapFileI(&zero_section_pointer, NULL, protection_flags, 0, zero_end - zero_page_begin, (char*) base_pointer + zero_page_begin);
 
                 LS_LOG_INFO_F(&object->allocationCallbacks, "Padded out ELF segment %i from 0x%llx to 0x%llx", i, zero_page_begin, zero_end);
 
-                if (unlikely(zero_section_pointer == MAP_FAILED)) {
-                    LS_LOG_ERROR_F(&object->allocationCallbacks, "Cannot memory map zeroed ELF segment pages, error: %s", strerror(errno));
-                    return LS_ERROR_MEMORY_MAP_FAILED;
+                if (unlikely(status != LS_OK)) {
+                    LS_LOG_ERROR("Cannot memory map zeroed ELF segment pages");
+                    return status;
                 }
             }
         }
+
+        elf_segment++;
+    }
+
+    if (!object->program_header_on_heap) {
+        // We have a program header in one of the segments, we will adjust the pointer
+        object->program_header = (ElfW(Phdr)*)((ElfW(Addr)) object->program_header + object->pLoadAddress);
+    }
+
+    return LS_OK;
+}
+#endif
+
+static LsStatus lsLoadSegmentsFromMemoryI(LsObject object) {
+    LS_LOG_INFO_F(&object->allocationCallbacks, "Identified %llu loadable segments", object->load_segment_count);
+    LS_LOG_INFO_F(&object->allocationCallbacks, "Loading ELF from 0x%llx to 0x%llx", object->load_segment_begin, object->load_segment_end);
+
+    const ElfW(Addr)  map_length    = object->load_segment_end - object->load_segment_begin;
+    const ElfW(Ehdr)* elf_header    = (ElfW(Ehdr)*) object->pFileData;
+    const ElfW(Phdr)* elf_segment   = (ElfW(Phdr)*)(object->pFileData + elf_header->e_phoff);
+
+    void* base_pointer;
+    LsStatus status = lsMapFileI(&base_pointer, NULL, LS_ACCESS_WRITE, 0, map_length, NULL);
+    if (status != LS_OK)
+        return status;
+
+
+    const ElfW(Addr) base_address = (ElfW(Addr)) base_pointer;
+    object->pLoadAddress = base_address;
+    object->objectInfo.pLoadAddress = base_pointer;
+
+    for (ElfW(Addr) i = 0; i < object->load_segment_count; ++i) {
+        while (elf_segment->p_type != PT_LOAD) elf_segment++;
+
+        if (elf_segment->p_filesz == 0) {
+            LS_LOG_ERROR("Relocatable segment has zero size");
+            return LS_ERROR_OBJECT_INVALID;
+        }
+
+        LS_LOG_INFO_F(&object->allocationCallbacks, "Loading ELF segment %i from 0x%llx to 0x%llx", i, elf_segment->p_vaddr, elf_segment->p_vaddr + elf_segment->p_memsz);
+
+        memcpy((void*)(base_address + elf_segment->p_vaddr), (void*)(object->pFileData + elf_segment->p_offset), elf_segment->p_filesz);
+
+        // We don't need to zero anything, as the OS should zero the pages for us
+
+        const LsAccessMode protection_flags = lsConvertProtectionFlagsToUnixFlagsI(elf_segment->p_flags);
+        status = lsProtectPageI((void*)(base_address + elf_segment->p_vaddr), elf_segment->p_memsz, protection_flags);
+        if (status != LS_OK)
+            return status;
 
         elf_segment++;
     }
@@ -1123,7 +1116,7 @@ static LsStatus lsParseDynamicSegmentI(LsObject object) {
                 // We extract DT_STRTAB early since we need it to resolve pointers
                 object->dtStrTab = (char*) object->pLoadAddress + dynamic_info->d_un.d_ptr;
 
-            /* fall through */
+                /* fall through */
             default:
                 if (unlikely(dynamic_info->d_tag > DT_NUM_LOCAL)) {
                     LS_LOG_WARNING_F(&object->allocationCallbacks, "ELF file contains unknown dynamic tag %llx", dynamic_info->d_tag);
@@ -1142,19 +1135,19 @@ static LsStatus lsParseDynamicSegmentI(LsObject object) {
         if (entry_count[*unique_tag] > 1) {
             LS_LOG_WARNING_F(&object->allocationCallbacks, "ELF file contains multiple entries for dynamic tag %s", dynamic_tag_names[*unique_tag]);
         }
-    }
+        }
 
     if (entry_count[DT_STRTAB] == 0 &&
         (entry_count[DT_NEEDED] || entry_count[DT_SONAME] || entry_count[DT_RPATH] || entry_count[DT_RUNPATH] || entry_count[DT_SYMTAB])) {
         LS_LOG_ERROR("ELF file does not contain DT_STRTAB but its referenced by other dynamic segments");
         return LS_ERROR_OBJECT_INVALID;
-    }
+        }
 
     if (entry_count[DT_SYMTAB] == 0 &&
         (entry_count[DT_HASH] || entry_count[DT_GNU_HASH_LOCAL] || entry_count[DT_STRTAB])) {
         LS_LOG_ERROR("ELF file does not contain DT_SYMTAB but its referenced by other dynamic segments");
         return LS_ERROR_OBJECT_INVALID;
-    }
+        }
 
     if (entry_count[DT_SYMENT] == 0 && entry_count[DT_SYMTAB]) {
         LS_LOG_ERROR("ELF file does not contain DT_SYMENT but its referenced by DT_SYMTAB");
@@ -1192,9 +1185,9 @@ static LsStatus lsParseDynamicSegmentI(LsObject object) {
             LS_LOG_WARNING("ELF file contains both DT_GNU_HASH and DT_HASH, using DT_GNU_HASH");
             object->symbolTableHashType = GNU;
         }
-    } else if (entry_count[DT_GNU_HASH_LOCAL])
+    } else if (entry_count[DT_GNU_HASH_LOCAL]) {
         object->symbolTableHashType = GNU;
-    else {
+    } else {
         LS_LOG_WARNING("ELF file contains no hash table, using none. This may cause performance issues");
     }
 
@@ -1573,7 +1566,7 @@ static uint_fast32_t lsPlainHashStringI(const char* name) {
     uint_fast32_t h = 0;
 
     while (*name) {
-        h = (h << 4) + (uint_fast32_t) *name++;
+        h = (uint_fast32_t)(h << 4) + (uint_fast32_t)*name++;
         const uint_fast32_t g = h & 0xf0000000;
         if (g)
             h ^= g >> 24;
@@ -2154,64 +2147,6 @@ static LsStatus lsDefaultLoadNeededCallback(void* pUserData, LsObject object, co
     return LS_ERROR_FEATURE_NOT_SUPPORTED;
 }
 
-static LsStatus lsDebugSupportAnnounceLoadI(LsObject object) {
-    struct link_map* map = lsAllocateI(sizeof(struct link_map), &object->allocationCallbacks);
-    if (map == NULL) {
-        LS_LOG_ERROR("Could not allocate memory for link map");
-        return LS_ERROR_MEMORY_ALLOCATION_FAILED;
-    }
-
-    map->l_addr = object->pLoadAddress;
-    map->l_name = (char*)(uintptr_t) object->objectInfo.pPath;
-    map->l_ld   = (ElfW(Dyn)*)(object->pLoadAddress + object->dynamic_info_segment->p_vaddr);
-    map->l_next = gGnuRDebug->r_map;
-    map->l_prev = NULL;
-
-    if (gGnuRDebug->r_map != NULL)
-        gGnuRDebug->r_map->l_prev = map;
-
-    gGnuRDebug->r_state = RT_ADD;
-    gGnuRDebug->r_map = map;
-    gGnuDebugState();
-
-    return LS_OK;
-}
-
-static void lsDebugSupportAnnounceLoadedI(LsObject object) {
-    unused(object);
-
-    gGnuRDebug->r_state = RT_CONSISTENT;
-    gGnuDebugState();
-}
-
-static void lsDebugSupportAnnounceUnloadI(LsObject object) {
-    struct link_map* map = gGnuRDebug->r_map;
-    while (true) {
-        if (map->l_addr == object->pLoadAddress)
-            break;
-
-        map = map->l_next;
-        if (map == NULL) {
-            LS_LOG_ERROR("Could not find object in the list of loaded objects");
-            return;
-        }
-    }
-
-    if (map->l_prev != NULL)
-        map->l_prev->l_next = map->l_next;
-
-    if (map->l_next != NULL)
-        map->l_next->l_prev = map->l_prev;
-
-    if (gGnuRDebug->r_map == map)
-        gGnuRDebug->r_map = map->l_next;
-
-    lsFreeI(map, &object->allocationCallbacks);
-
-    gGnuRDebug->r_state = RT_DELETE;
-    gGnuDebugState();
-}
-
 static LsObjectLoadCallbacks gDefaultLoadCallbacks = {
     NULL,
     lsDefaultLoadNeededCallback
@@ -2234,9 +2169,21 @@ LsStatus lsLoadObject(LsObject object, const LsObjectLoadCallbacks* pLoadCallbac
     if (status != LS_OK)
         return status;
 
-    status = lsLoadSegmentsI(object);
+#if defined(_WIN32)
+    status = lsLoadSegmentsFromMemoryI(object);
     if (status != LS_OK)
         return status;
+#else
+    if (object->objectInfo.pPath != NULL) {
+        status = lsLoadSegmentsFromFileI(object);
+        if (status != LS_OK)
+            return status;
+    } else {
+        status = lsLoadSegmentsFromMemoryI(object);
+        if (status != LS_OK)
+            return status;
+    }
+#endif
 
     status = lsParseDynamicSegmentI(object);
     if (status != LS_OK)
@@ -2404,3 +2351,9 @@ LsStatus lsFinalizeObject(LsObject object, const LsObjectFinalizeCallbacks* pFin
 
     return LS_OK;
 }
+
+#if defined(_WIN32)
+#include "windows.inl"
+#else
+#include "unix.inl"
+#endif

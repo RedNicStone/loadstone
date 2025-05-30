@@ -1,0 +1,131 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "debug-unknown-linux-gcc",
+      "displayName": "Debug (Unknown Linux GCC)",
+      "description": "Debug build using linux GCC toolchain",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug/unknown-linux-gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": {
+          "type": "FILEPATH",
+          "value": "cmake/toolchains/unknown-linux-gcc.cmake"
+        },
+        "LOADSTONE_BUILD_PEDANTIC": "ON",
+        "LOADSTONE_BUILD_TOOLS": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "debug-x86_64-windows-mingw32",
+      "displayName": "Debug (X86_64 Windows MinGW32, cross-compiling)",
+      "description": "Cross-compile debug build using MinGW32 toolchain",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug/x86_64-windows-mingw32",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": {
+          "type": "FILEPATH",
+          "value": "cmake/toolchains/x86_64-windows-mingw32.cmake"
+        },
+        "LOADSTONE_MODULE_TOOLCHAIN": {
+          "type": "FILEPATH",
+          "value": "cmake/toolchains/unknown-linux-gcc.cmake"
+        },
+        "LOADSTONE_BUILD_PEDANTIC": "ON",
+        "LOADSTONE_BUILD_TOOLS": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "release-unknown-linux-gcc",
+      "displayName": "Release (Unknown Linux GCC)",
+      "description": "Release build using linux GCC toolchain",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release/unknown-linux-gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": {
+          "type": "FILEPATH",
+          "value": "cmake/toolchains/unknown-linux-gcc.cmake"
+        }
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "release-unknown-linux-clang",
+      "displayName": "Release (Unknown Linux Clang)",
+      "description": "Release build using linux Clang toolchain",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release/unknown-linux-clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": {
+          "type": "FILEPATH",
+          "value": "cmake/toolchains/unknown-linux-clang.cmake"
+        }
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "release-x86_64-windows-mingw32",
+      "displayName": "Release (X86_64 Windows MinGW32, cross-compiling)",
+      "description": "Cross-compile release build using MinGW32 toolchain",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release/x86_64-windows-mingw32",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": {
+          "type": "FILEPATH",
+          "value": "cmake/toolchains/x86_64-windows-mingw32.cmake"
+        },
+        "LOADSTONE_MODULE_TOOLCHAIN": {
+          "type": "FILEPATH",
+          "value": "cmake/toolchains/unknown-linux-gcc.cmake"
+        }
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "minsizerel-unknown-linux-gcc",
+      "displayName": "MinSizeRel (Unknown Linux GCC)",
+      "description": "MinSizeRel build using linux GCC toolchain",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/minsizerel/unknown-linux-gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "MinSizeRel",
+        "CMAKE_TOOLCHAIN_FILE": {
+          "type": "FILEPATH",
+          "value": "cmake/toolchains/unknown-linux-gcc.cmake"
+        }
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    }
+  ]
+}

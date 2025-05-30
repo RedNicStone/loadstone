@@ -1,10 +1,10 @@
 
 // Source for the 'bar' plugin.
 
-#include "host.h"
+#include "../host/host.h"
 #include "plugin-foo.h"
 
 void initialize() {
-    host_printf("%s", "[BAR] Initializing plugin...\n");
+    host_print("[BAR] Initializing plugin...\n");
     foo_print_thing("[BAR] Says hello!");
 }

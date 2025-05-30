@@ -11,7 +11,7 @@
 #endif
 
 #ifdef __cplusplus
-//extern "C" {
+extern "C" {
 #endif
 
 /// @brief Defines an opaque handle type for an object.
@@ -285,7 +285,7 @@ const LsObjectInfo *lsGetObjectInfo(LsObject object);
 void *lsGetSymbolAddress(LsObject object, const char *pSymbolName);
 
 #ifdef __cplusplus
-//}
+}
 #endif
 
 #endif // LOADSTONE_H

@@ -7,11 +7,19 @@
 #include <stdlib.h>
 #include <string.h>
 
-void host_printf(const char* pFormat, ...) {
-    va_list args;
-    va_start(args, pFormat);
-    vprintf(pFormat, args);
-    va_end(args);
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOSERVICE
+#define NOMCX
+#define NOIME
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+__attribute__((sysv_abi))
+void host_print(const char* pString) {
+    fputs(pString, stdout);
 }
 
 void message_callback(void* pUserData, LsSeverity severity, const char* pMessage) {
@@ -50,7 +58,12 @@ LsStatus load_needed_callback(void* pUserData, LsObject object, const char* pNee
     printf("[HOST] Using library path: %s\n", needed_path);
 
     load_chain* pChain = malloc(sizeof(load_chain));
-    LsStatus status = lsOpenObjectFromFile(needed_path, LS_DEBUG_SUPPORT_ENABLE_GNU, &pChain->object, NULL);
+#if !defined(_WIN32) && defined(DEBUG)
+    LsDebugSupport debug_support = LS_DEBUG_SUPPORT_ENABLE_GNU;
+#else
+    LsDebugSupport debug_support = LS_DEBUG_SUPPORT_DISABLE;
+#endif
+    LsStatus status = lsOpenObjectFromFile(needed_path, debug_support, &pChain->object, NULL);
     if (status != LS_OK) {
         free(pChain);
         return status;
@@ -85,9 +98,9 @@ LsStatus resolve_symbol_callback(void* pUserData, LsObject object, const char* p
         }
     }
 
-    const char* host_printf_name = "host_printf";
-    if (strcmp(pSymbolName, host_printf_name) == 0) {
-        *pSymbolAddress = host_printf;
+    const char* host_print_name = "host_print";
+    if (strcmp(pSymbolName, host_print_name) == 0) {
+        *pSymbolAddress = host_print;
         return LS_OK;
     }
 
@@ -122,8 +135,8 @@ void call_plugins() {
         if (!symbol)
             continue;
 
-        typedef void (*init_func)();
-        const init_func init = symbol;
+        typedef void (*init_func)() __attribute__((sysv_abi));
+        init_func init = symbol;
         init();
     }
 }
@@ -144,11 +157,34 @@ void unload_plugins() {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 1) {
+    puts("[HOST] Loading plugins");
+
+#if defined(_WIN32)
+    DWORD size = 512;
+
+    for(;;) {
+        binary_path = (char *)malloc(size);
+        if (!binary_path) {
+            perror("Failed to allocate memory for binary path");
+            return -1;
+        }
+        const DWORD res = GetModuleFileName(NULL, binary_path, size);
+        if (res > 0 && res < size)
+            break;
+        free(binary_path);
+        if (res != size) {
+            perror("Failed to get path to executable");
+            return -1;
+        }
+        size *= 2;
+    }
+#else
+    binary_path = realpath("/proc/self/exe", NULL);
+    if (!binary_path) {
+        puts("Failed to get path to executable");
         return 1;
     }
-
-    binary_path = argv[0];
+#endif
 
     const LsMessageCallbacks message_callbacks = { .pfnMessage = message_callback };
     lsSetMessageCallback(&message_callbacks);
@@ -175,6 +211,8 @@ int main(int argc, char** argv) {
 
     unload_plugins();
     printf("[HOST] Plugins unloaded\n");
+
+    free(binary_path);
 
     return 0;
 }

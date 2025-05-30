@@ -1,5 +1,7 @@
-cmake_minimum_required(VERSION 3.30)
-project(loadstone C CXX)
+cmake_minimum_required(VERSION 3.10)
+project(loadstone C)
+
+include(cmake/util/dual_toolchain.cmake)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_CXX_STANDARD 20)
@@ -39,8 +41,38 @@ target_include_directories(loadstone-shared PUBLIC include)
 set_target_properties(loadstone-shared PROPERTIES LINKER_LANGUAGE C)
 target_compile_options(loadstone-shared PRIVATE ${EXTRA_COMPILE_FLAGS})
 
+set(LOADSTONE_ELF_HEADER_SEARCH_PATH "/usr/include" CACHE PATH "Path to search for elf.h")
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    message(STATUS "Searching for 'elf.h' in: ${LOADSTONE_ELF_HEADER_SEARCH_PATH}")
+    find_file(ELF_HEADER_PATH elf.h
+            HINTS ${LOADSTONE_ELF_HEADER_SEARCH_PATH}
+            NO_DEFAULT_PATH
+            NO_CMAKE_FIND_ROOT_PATH
+    )
+
+    if(ELF_HEADER_PATH)
+        set(DESTINATION_DIR "${CMAKE_BINARY_DIR}/external/elf")
+        file(MAKE_DIRECTORY ${DESTINATION_DIR})
+        file(COPY ${ELF_HEADER_PATH} DESTINATION ${DESTINATION_DIR})
+
+        target_include_directories(loadstone-static PRIVATE ${DESTINATION_DIR})
+        target_include_directories(loadstone-shared PRIVATE ${DESTINATION_DIR})
+    else()
+        message(FATAL_ERROR "'elf.h' not found in ${LOADSTONE_ELF_HEADER_SEARCH_PATH}. Please set LOADSTONE_ELF_HEADER_SEARCH_PATH to the correct path.")
+    endif()
+endif()
+
 set(LOADSTONE_BUILD_TOOLS OFF CACHE BOOL "Build loadstone examples")
 if (LOADSTONE_BUILD_TOOLS)
+    include(CTest)
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_subdirectory(examples/lsload)
+    endif()
+
     add_subdirectory(examples/plugin)
-    add_subdirectory(examples/lsload)
 endif ()
+
+# Prevent 'variables not used' warning when not building with c++
+set(IGNORE_ME ${CMAKE_CXX_COMPILER})
+set(IGNORE_ME ${CMAKE_TOOLCHAIN_FILE})

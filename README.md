@@ -1,19 +1,15 @@
 # Loadstone: A Flexible ELF Relocatable Loader
 
-**Loadstone** is a lightweight, flexible library for loading ELF relocatable files, giving developers more control than traditional dynamic loading mechanisms like `dlopen` and `dlsym`. It is designed to empower developers with fine-grained handling of symbol resolution, library loading, and cross-platform portability.
-
----
+**Loadstone** is a lightweight, flexible library for loading ELF relocatable files, giving developers more control than traditional dynamic loading mechanisms like `dlopen` and `dlsym`.
 
 ## Features
 
 - Customizable symbol and library resolution.
-- Cross-platform ELF loading (Unix and **Windows support in development**).
+- Cross-platform ELF loading (Unix and Windows).
 - Support for memory-backed ELF loading (no file required).
 - Partial library loading and hot-reloading.
 - Sandbox-friendly architecture for isolating untrusted plugins.
 - Ansi compliant C99 codebase.
-
----
 
 ## Applications
 
@@ -26,15 +22,13 @@ Typical plugin systems use `dlopen` and `dlsym` to load compiled modules. This w
 
 **Loadstone** addresses these issues by allowing **user-defined callbacks** for library and symbol resolution. This enables structured, controlled plugin ecosystems where complex dependencies can be resolved easily and safely.
 
----
-
 ### 2. Cross-Platform ELF Binaries
 
-Unlike `glibc` or `musl`, **Loadstone** is not bound to Unix platforms. Windows support is actively being developed, with future expansion to embedded platforms in mind.
+Unlike `glibc` or `musl`, **Loadstone** is not bound to Unix platforms. Windows is supported, with future expansion to embedded platforms in mind.
 
-By abstracting platform-specific functions into optional modules, the **same ELF binary** can be loaded across multiple systems (as long as the architecture and ABI matches). This dramatically simplifies distribution—one binary per architecture, regardless of operating system.
+By abstracting platform-specific functions into optional modules, the **same ELF binary** can be loaded across multiple systems (as long as the architecture and ABI match). This dramatically simplifies distribution—one binary per architecture, regardless of operating system.
 
----
+Additionally, support for [FatELF](https://icculus.org/fatelf/) is being looked into, which would allow the same binary to be loaded on multiple architectures.
 
 ### 3. Secure, Out-of-Process Library Virtualization
 
@@ -46,8 +40,6 @@ In situations where plugins should not be fully trusted, **Loadstone** offers a 
 
 Shared memory strategies (such as reserving a static heap buffer) can allow pointer passing between processes. Alternatively, plugin ABIs can be designed to avoid unsafe pointer sharing altogether.
 
----
-
 ### 4. Loading Libraries Directly from Memory
 
 **Loadstone** allows libraries to be loaded entirely from memory, without needing a file system backing. This is ideal for:
@@ -58,16 +50,12 @@ Shared memory strategies (such as reserving a static heap buffer) can allow poin
 
 **Note**: The loaded binary must stay mapped in memory, which could increase RAM usage.
 
----
-
 ### 5. Partial Loading and Hot-Reloading
 
 With **Loadstone**, libraries can be reloaded, re-resolved, and selectively loaded during runtime:
 
 - **Partial Loading**: Not all symbols need to be resolved at load time. Missing symbols can default to `NULL`, allowing optional features or degraded modes.
 - **Hot-Reloading**: Libraries and their dependencies can be swapped out while the application is running. This is ideal for rapid iteration, live updates, and development workflows—for example, reloading a game plugin without restarting the game and losing state.
-
----
 
 ## Why Loadstone?
 
@@ -77,13 +65,14 @@ Traditional dynamic linking solutions are rigid. **Loadstone** puts the develope
 
 - ✅ ELF library loading.
 - ✅ Unix/Linux support.
-- 🚧 Extended callbacks and default behaviors.
+- ✅ Windows support.
+- ✅ Extended callbacks and default behaviors.
+- ✅ In-memory library loading.
 - 🚧 Improved memory safety.
-- 🚧 In-memory library loading.
-- 🚧 Windows support.
-- ⏳ Embedded/RTOS compatibility exploration.
-- ⏳ Additional sandboxing utilities.
 - ⏳ TLS support.
+- ⏳ Additional sandboxing utilities.
+- ⏳ Embedded/RTOS compatibility exploration.
+- ⏳ FatELF support exploration.
 
 ## License
 
@@ -121,6 +110,8 @@ gcc example.c -I/path/to/loadstone/include -L/path/to/build -lloadstone -o examp
 - Ensure the runtime linker can locate `libloadstone.so` (e.g., via `LD_LIBRARY_PATH` or `rpath`).
 
 ---
+
+# Examples
 
 ### Minimal “hello‑plugin” example
 
@@ -189,7 +180,10 @@ gcc main.c -I./include -L./build -lloadstone -o main
 ./main
 ```
 
----
+### Other included examples
+
+- [`plugin`](examples/plugin): A minimal C "hello-plugin" example. Cross-platform.
+- [`lsload`](examples/lsload): A simple C++ implementation of library loading as performed by ld. Linux only.
 
 ## Contributing
 
@@ -200,13 +194,7 @@ Contributions to the following goals would be especially welcome:
 - Support and testing for Windows platforms.
 - Design and implementation of sandboxing utilities.
 
----
-
 ## Support
 
 For questions, issues, or feature requests, feel free to open a GitHub issue.
-
----
-
-**Loadstone**: load your libraries your way.
 

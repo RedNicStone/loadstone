@@ -1,20 +1,29 @@
 
-add_library(loadstone-example-plugin-foo SHARED ${CMAKE_CURRENT_SOURCE_DIR}/plugin-foo.c)
-add_library(loadstone-example-plugin-bar SHARED ${CMAKE_CURRENT_SOURCE_DIR}/plugin-bar.c)
+loadstone_module_project(loadstone-example-plugin
+        ${CMAKE_CURRENT_SOURCE_DIR}/module
+        ${CMAKE_CURRENT_BINARY_DIR}
+)
 
-target_link_libraries(loadstone-example-plugin-bar PRIVATE loadstone-example-plugin-foo)
-
-set_target_properties(loadstone-example-plugin-foo PROPERTIES PREFIX "" SUFFIX ".so" OUTPUT_NAME "plugin-foo")
-set_target_properties(loadstone-example-plugin-bar PROPERTIES PREFIX "" SUFFIX ".so" OUTPUT_NAME "plugin-bar")
-
-target_link_options(loadstone-example-plugin-foo PRIVATE -nolibc -nostdlib -nodefaultlibs)
-target_link_options(loadstone-example-plugin-bar PRIVATE -nolibc -nostdlib -nodefaultlibs)
-
-add_executable(loadstone-example-host ${CMAKE_CURRENT_SOURCE_DIR}/host.c)
+add_executable(loadstone-example-host ${CMAKE_CURRENT_SOURCE_DIR}/host/host.c)
 target_link_libraries(loadstone-example-host PRIVATE loadstone-static)
 
-add_dependencies(loadstone-example-host loadstone-example-plugin-foo loadstone-example-plugin-bar)
+add_dependencies(loadstone-example-host loadstone-example-plugin)
 
 set_target_properties(loadstone-example-host PROPERTIES LINKER_LANGUAGE C)
-set_target_properties(loadstone-example-plugin-bar PROPERTIES LINKER_LANGUAGE C)
-set_target_properties(loadstone-example-plugin-foo PROPERTIES LINKER_LANGUAGE C)
+
+set(EXECUTABLE_RUNNER "")
+set(EXECUTABLE_POSTFIX "")
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(EXECUTABLE_POSTFIX ".exe")
+    if (CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+        set(EXECUTABLE_RUNNER "wine")
+    endif()
+endif()
+
+
+add_test(
+        NAME loadstone-example-host
+        COMMAND ${EXECUTABLE_RUNNER} ${CMAKE_CURRENT_BINARY_DIR}/loadstone-example-host${EXECUTABLE_POSTFIX}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
